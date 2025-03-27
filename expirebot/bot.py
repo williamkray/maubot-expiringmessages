@@ -37,6 +37,9 @@ def parse_duration(duration_str: str) -> int:
 class ExpiringMessages(Plugin):
 
     _expirer_task: asyncio.Task = None
+    _redaction_semaphore: asyncio.Semaphore = None
+    _last_redaction_time: float = 0
+    _min_redaction_interval: float = 0.1  # Minimum 100ms between redactions
 
     async def can_use_command(self, evt: MessageEvent) -> tuple[bool, str]:
         """
@@ -77,6 +80,38 @@ class ExpiringMessages(Plugin):
             self.log.error(f"Error checking command permissions: {e}")
             return False, "Failed to check permissions. Please try again later."
 
+    async def _redact_with_backoff(self, room_id: str, event_id: str, max_retries: int = 5) -> bool:
+        """
+        Attempt to redact an event with exponential backoff.
+        Returns True if successful, False if failed after all retries.
+        """
+        base_delay = 1  # Start with 1 second delay
+        max_delay = 32  # Maximum delay of 32 seconds
+        
+        for attempt in range(max_retries):
+            try:
+                # Ensure minimum time between redactions
+                now = asyncio.get_event_loop().time()
+                time_since_last = now - self._last_redaction_time
+                if time_since_last < self._min_redaction_interval:
+                    await asyncio.sleep(self._min_redaction_interval - time_since_last)
+                
+                async with self._redaction_semaphore:
+                    await self.client.redact(room_id, event_id, reason="Message expired")
+                    self._last_redaction_time = asyncio.get_event_loop().time()
+                    return True
+            except Exception as e:
+                if "Too Many Requests" in str(e):
+                    delay = min(base_delay * (2 ** attempt), max_delay)  # Exponential backoff, capped at max_delay
+                    self.log.warning(f"Rate limited while redacting {event_id}. Retrying in {delay} seconds...")
+                    await asyncio.sleep(delay)
+                else:
+                    self.log.error(f"Failed to redact event {event_id}: {e}")
+                    return False
+        
+        self.log.error(f"Failed to redact event {event_id} after {max_retries} attempts")
+        return False
+
     async def _process_expirations(self):
         now_ms = int(datetime.datetime.now(datetime.UTC).timestamp() * 1000)
         try:
@@ -88,23 +123,34 @@ class ExpiringMessages(Plugin):
             """
             events_to_expire = await self.database.fetch(events_query)
             
-            for event in events_to_expire:
-                room_id = event['room_id']
-                expiration_ms = event['expiry_msec']
-                cutoff = now_ms - expiration_ms
+            # Process events in smaller batches to avoid overwhelming the server
+            batch_size = 10
+            for i in range(0, len(events_to_expire), batch_size):
+                batch = events_to_expire[i:i + batch_size]
                 
-                try:
-                    event_content = await self.client.get_event(room_id, event['event_id'])
-                    if event_content.timestamp < cutoff:
-                        await self.client.redact(room_id, event['event_id'], reason="Message expired")
-                        # Delete the event from our database after successful redaction
-                        await self.database.execute(
-                            "DELETE FROM events WHERE event_id = $1",
-                            event['event_id']
-                        )
-                        self.log.info(f"Redacted event {event['event_id']} in room {room_id}")
-                except Exception as e:
-                    self.log.error(f"Failed to redact event {event['event_id']}: {e}")
+                for event in batch:
+                    room_id = event['room_id']
+                    expiration_ms = event['expiry_msec']
+                    cutoff = now_ms - expiration_ms
+                    
+                    try:
+                        event_content = await self.client.get_event(room_id, event['event_id'])
+                        if event_content.timestamp < cutoff:
+                            if await self._redact_with_backoff(room_id, event['event_id']):
+                                # Delete the event from our database after successful redaction
+                                await self.database.execute(
+                                    "DELETE FROM events WHERE event_id = $1",
+                                    event['event_id']
+                                )
+                                self.log.info(f"Redacted event {event['event_id']} in room {room_id}")
+                            else:
+                                self.log.error(f"Failed to redact event {event['event_id']} after all retries")
+                    except Exception as e:
+                        self.log.error(f"Failed to process event {event['event_id']}: {e}")
+                
+                # Add a small delay between batches
+                if i + batch_size < len(events_to_expire):
+                    await asyncio.sleep(0.5)
         except Exception as e:
             self.log.error(f"Database error in _process_expirations: {e}")
 
@@ -124,6 +170,7 @@ class ExpiringMessages(Plugin):
         await super().start()
         # Database migrations will ensure RoomExpiration table exists.
         self._expirer_task = asyncio.create_task(self._expirer_loop())
+        self._redaction_semaphore = asyncio.Semaphore(1)  # Only one redaction at a time
         self.log.info("ExpirePlugin started!")
 
     async def stop(self) -> None:

@@ -10,6 +10,26 @@ conversations. Using this plugin does not make you "secure". It does not protect
 
 Please understand your threat model and how this plugin fits into that.
 
+This bot assumes that all messages are sent by trusted contacts, and that the matrix homeservers are not
+intentionally behaving badly. This is not always the case. This bot uses a message's timestamp to determine when
+to delete it, however if a user sends a message with a spoofed timestamp, it may not be redacted at all, or
+redacted on a different schedule than expected.
+
+Also, the distributed nature of Matrix federation means that redacting a message on one server does not necessarily
+guarantee that the redaction will reach the other participating servers in the room in the expected time frame, or at
+all.
+
+In addition, even if the message is effectively redacted, there is no guarantee that the participating servers
+expunge that redacted data in a reasonable time. Synapse default is to retain the original message for 7 days (I
+believe), but this can be modified or changed to never expunge the redacted event at all.
+
+Beyond all of that, there is always the possibility that the people you are messaging may screenshot the
+conversation, or otherwise transcribe it to some other location before it is expired.
+
+Keep all of these factors in mind when using this plugin. The most ideal situation is using this plugin in a room that
+is comprised of only members of a server you control, and have the ability to validate that the server is acting in
+good faith. Anything beyond that and you are on your own.
+
 ## Commands
 
 ### Set Message Expiration

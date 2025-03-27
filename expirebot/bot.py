@@ -38,8 +38,11 @@ class ExpiringMessages(Plugin):
 
     _expirer_task: asyncio.Task = None
 
-    async def can_use_command(self, evt: MessageEvent) -> bool:
-        """Check if the user has permission to redact messages in this room."""
+    async def can_use_command(self, evt: MessageEvent) -> tuple[bool, str]:
+        """
+        Check if both the user and bot have permission to redact messages in this room.
+        Returns a tuple of (has_permission, error_message).
+        """
         try:
             # Get the room's power levels
             levels = await self.client.get_state_event(
@@ -49,19 +52,30 @@ class ExpiringMessages(Plugin):
             # Get the user's power level
             user_level = levels.get_user_level(evt.sender)
             
+            # Get the bot's power level
+            bot_level = levels.get_user_level(self.client.mxid)
+            
             # Get the power level required for redaction
-            redact_level = levels.get_event_level(EventType.ROOM_REDACTION)
+            redact_level = getattr(levels, 'redact', 50)  # Default to 50 if not set
             
-            # If no specific redaction level is set, it defaults to 50
-            if redact_level is None:
-                redact_level = 50
+            # Debug logging
+            self.log.debug(f"Permission check for room {evt.room_id}:")
+            self.log.debug(f"  User {evt.sender} has level {user_level}")
+            self.log.debug(f"  Bot {self.client.mxid} has level {bot_level}")
+            self.log.debug(f"  Required redaction level is {redact_level}")
             
-            # User must have at least the redaction power level
-            return user_level >= redact_level
+            # Check if user has permission
+            if user_level < redact_level:
+                return False, f"You need a power level of {redact_level} or higher to set message expiration."
+            
+            # Check if bot has permission
+            if bot_level < redact_level:
+                return False, f"I need a power level of {redact_level} or higher to redact messages."
+            
+            return True, ""
         except Exception as e:
             self.log.error(f"Error checking command permissions: {e}")
-            return False
-
+            return False, "Failed to check permissions. Please try again later."
 
     async def _process_expirations(self):
         now_ms = int(datetime.datetime.now(datetime.UTC).timestamp() * 1000)
@@ -131,10 +145,9 @@ class ExpiringMessages(Plugin):
         room_id = evt.room_id
 
         ## room participants must have appropriate PL to set message expiration
-        if not await self.can_use_command(evt):
-            await evt.reply(
-                "Only users with PL of 50 or higher can set message expiration."
-            )
+        has_permission, error_msg = await self.can_use_command(evt)
+        if not has_permission:
+            await evt.respond(error_msg)
             return None
 
         # Handle setting expiration time
@@ -161,10 +174,9 @@ class ExpiringMessages(Plugin):
     async def cmd_expire_unset(self, evt: MessageEvent) -> None:
         room_id = evt.room_id
 
-        if not await self.can_use_command(evt):
-            await evt.reply(
-                "Only users with PL of 50 or higher can set message expiration."
-            )
+        has_permission, error_msg = await self.can_use_command(evt)
+        if not has_permission:
+            await evt.respond(error_msg)
             return None
 
         try:

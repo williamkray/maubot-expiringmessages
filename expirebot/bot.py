@@ -220,7 +220,8 @@ class ExpiringMessages(Plugin):
     @event.on(EventType.ROOM_MESSAGE)
     async def track_expiring_message(self, evt: MessageEvent) -> None:
         if evt.content.msgtype in {MessageType.TEXT, MessageType.NOTICE, MessageType.EMOTE, 
-                                   MessageType.FILE, MessageType.IMAGE, MessageType.VIDEO}:
+                                   MessageType.FILE, MessageType.IMAGE, MessageType.VIDEO,
+                                   MessageType.LOCATION}:
             try:
                 room_rules = await self.database.fetch("SELECT room_id, expiry_msec FROM room_expiry_times")
                 
@@ -235,6 +236,23 @@ class ExpiringMessages(Plugin):
             except Exception as e:
                 self.log.error(f"Database error in track_expiring_message: {e}")
                 # Don't respond to the user since this is an event handler
+
+    @event.on(EventType.STICKER)
+    async def track_expiring_sticker(self, evt) -> None:
+        try:
+            room_rules = await self.database.fetch("SELECT room_id, expiry_msec FROM room_expiry_times")
+            
+            # Check if this room has an expiration rule
+            room_rule = next((rule for rule in room_rules if rule['room_id'] == evt.room_id), None)
+            if room_rule:
+                query = """
+                    INSERT INTO events(event_id, room_id)
+                    VALUES ($1, $2)
+                """
+                await self.database.execute(query, evt.event_id, evt.room_id)
+        except Exception as e:
+            self.log.error(f"Database error in track_expiring_sticker: {e}")
+            # Don't respond to the user since this is an event handler
 
     @classmethod
     def get_db_upgrade_table(cls) -> None:

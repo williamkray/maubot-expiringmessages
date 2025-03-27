@@ -1,0 +1,9 @@
+maubot: 0.1.0
+id: org.jobmachine.expirebot
+version: 0.1.0
+license: MIT
+modules:
+  - expirebot
+main_class: ExpiringMessages
+database: true
+database_type: asyncpg

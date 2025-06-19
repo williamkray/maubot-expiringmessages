@@ -8,7 +8,7 @@ from typing import Type
 
 from maubot import Plugin
 from maubot.handlers import command, event
-from mautrix.types import (MessageEvent, EventType, MessageType)
+from mautrix.types import (MessageEvent, EventType, MessageType, StateEvent, Membership)
 
 from .db import upgrade_table
 
@@ -312,6 +312,31 @@ class ExpiringMessages(Plugin):
         except Exception as e:
             self.log.error(f"Database error in track_expiring_sticker: {e}")
             # Don't respond to the user since this is an event handler
+
+    @event.on(EventType.ROOM_MEMBER)
+    async def handle_membership_change(self, evt: StateEvent) -> None:
+        """
+        Handle room membership changes. When the bot leaves a room, clean up expiration settings.
+        """
+        # Only process events where the bot's membership is changing
+        if evt.state_key != self.client.mxid:
+            return
+        
+        # Check if the bot is leaving the room
+        if evt.content.membership == Membership.LEAVE:
+            room_id = evt.room_id
+            self.log.info(f"Bot leaving room {room_id}, cleaning up expiration settings")
+            
+            try:
+                # Delete the room's expiration rule and all tracked events
+                # The events will be automatically deleted due to ON DELETE CASCADE
+                await self.database.execute(
+                    "DELETE FROM room_expiry_times WHERE room_id = $1",
+                    room_id
+                )
+                self.log.info(f"Cleaned up expiration settings for room {room_id}")
+            except Exception as e:
+                self.log.error(f"Failed to clean up expiration settings for room {room_id}: {e}")
 
     @classmethod
     def get_db_upgrade_table(cls) -> None:

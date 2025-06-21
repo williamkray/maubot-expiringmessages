@@ -388,11 +388,15 @@ class ExpiringMessages(Plugin):
                 await self.database.execute(query, room_id, default_expiry_ms)
                 
                 greeting = '\n'.join([
-                    "**Default Configuration:** Messages will automatically expire after **7 days**\n",
-                        "**Commands:**",
-                        "- `!expire set <time>` - Change expiration time (e.g., `!expire set 24h`)",
-                        "- `!expire unset` - Disable message expiration",
-                        "- `!expire show` - Show current settings\n"
+                    "🤖 Hi, I'm a message expiration bot!",
+                    "",
+                    "📅 Default Configuration: Messages will automatically expire after 7 days",
+                    "",
+                    "💡 Commands:",
+                    "• !expire set <time> - Change expiration time (e.g., !expire set 24h)",
+                    "• !expire unset - Disable message expiration", 
+                    "• !expire show - Show current settings",
+                    ""
                 ])
 
                 # Check if the bot has necessary permissions
@@ -404,15 +408,15 @@ class ExpiringMessages(Plugin):
                     redact_level = getattr(levels, 'redact', 50)  # Default to 50 if not set
                     
                     if bot_level >= redact_level:
-                        greeting_status = "✅ **Status:** Bot has necessary permissions to redact messages"
+                        greeting_status = "✅ Status: Bot has necessary permissions to redact messages"
                     else:
-                        greeting_status = "⚠️ **Warning:** Bot needs power level " + str(redact_level) + " or higher to redact messages. " \
+                        greeting_status = "⚠️ Warning: Bot needs power level " + str(redact_level) + " or higher to redact messages. " \
                                         "Current level: " + str(bot_level) + ". Please grant appropriate permissions."
                     
                     greeting += greeting_status
 
                 except Exception as perm_error:
-                    greeting_status = "⚠️ **Warning:** Unable to verify bot permissions. Please ensure the bot has power level 50+ to redact messages."
+                    greeting_status = "⚠️ Warning: Unable to verify bot permissions. Please ensure the bot has power level 50+ to redact messages."
                     greeting += greeting_status
                     self.log.error(f"Failed to check permissions in room {room_id}: {perm_error}")
                 finally:
@@ -421,8 +425,8 @@ class ExpiringMessages(Plugin):
                 
             except Exception as e:
                 self.log.error(f"Failed to set default expiration for room {room_id}: {e}")
-                greeting_status = "⚠️ **Warning:** Something unexpected happend, and I was unable to configure default message expiration. " \
-                                "Please use `!expire set 7d` to manually configure it."
+                greeting_status = "⚠️ Warning: Something unexpected happened, and I was unable to configure default message expiration. " \
+                                "Please use !expire set 7d to manually configure it."
                 greeting += greeting_status
                 await self.client.send_text(room_id, greeting)
 

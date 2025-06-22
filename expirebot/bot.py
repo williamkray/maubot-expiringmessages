@@ -358,21 +358,27 @@ class ExpiringMessages(Plugin):
         
         # Check if the bot is leaving the room
         if evt.content.membership == Membership.LEAVE:
-            if evt.source & SyncStream.STATE:
-                return
-                
-            self.log.info(f"Bot leaving room {room_id}, cleaning up expiration settings")
+            # Check if this room has expiration settings that need to be cleaned up
+            existing_settings = await self.database.fetchrow(
+                "SELECT expiry_msec FROM room_expiry_times WHERE room_id = $1",
+                room_id
+            )
             
-            try:
-                # Delete the room's expiration rule and all tracked events
-                # The events will be automatically deleted due to ON DELETE CASCADE
-                await self.database.execute(
-                    "DELETE FROM room_expiry_times WHERE room_id = $1",
-                    room_id
-                )
-                self.log.info(f"Cleaned up expiration settings for room {room_id}")
-            except Exception as e:
-                self.log.error(f"Failed to clean up expiration settings for room {room_id}: {e}")
+            if existing_settings:
+                self.log.info(f"Bot leaving room {room_id}, cleaning up expiration settings")
+                
+                try:
+                    # Delete the room's expiration rule and all tracked events
+                    # The events will be automatically deleted due to ON DELETE CASCADE
+                    await self.database.execute(
+                        "DELETE FROM room_expiry_times WHERE room_id = $1",
+                        room_id
+                    )
+                    self.log.info(f"Cleaned up expiration settings for room {room_id}")
+                except Exception as e:
+                    self.log.error(f"Failed to clean up expiration settings for room {room_id}: {e}")
+            else:
+                self.log.info(f"Bot leaving room {room_id} that has no expiration settings to clean up")
         
         # Check if the bot is joining the room
         elif evt.content.membership == Membership.JOIN:

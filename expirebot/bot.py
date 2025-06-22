@@ -376,65 +376,72 @@ class ExpiringMessages(Plugin):
         
         # Check if the bot is joining the room
         elif evt.content.membership == Membership.JOIN:
-            if evt.source & SyncStream.STATE:
-                return
-
-            self.log.info(f"Bot joining room {room_id}, setting default expiration")
+            # Check if this room already has expiration settings configured
+            existing_settings = await self.database.fetchrow(
+                "SELECT expiry_msec FROM room_expiry_times WHERE room_id = $1",
+                room_id
+            )
             
-            try:
-                # Set default 7-day expiration (7 days in milliseconds)
-                default_expiry_ms = 7 * 24 * 60 * 60 * 1000
+            # Only set defaults and send greeting if this is a new room (no existing settings)
+            if not existing_settings:
+                self.log.info(f"Bot joining new room {room_id}, setting default expiration")
                 
-                # Use REPLACE INTO for SQLite compatibility
-                query = """
-                    INSERT INTO room_expiry_times(room_id, expiry_msec)
-                    VALUES ($1, $2)
-                    ON CONFLICT(room_id) DO UPDATE SET expiry_msec=$2
-                """
-                await self.database.execute(query, room_id, default_expiry_ms)
-                
-                greeting = '\n'.join([
-                    "🤖 Hi, I'm a message expiration bot!",
-                    "",
-                    "📅 Default Configuration: Messages will automatically expire after 7 days",
-                    "",
-                    "💡 Commands:",
-                    "• !expire set <time> - Change expiration time (e.g., !expire set 24h)",
-                    "• !expire unset - Disable message expiration", 
-                    "• !expire show - Show current settings",
-                    ""
-                ])
-
-                # Check if the bot has necessary permissions
                 try:
-                    levels = await self.client.get_state_event(
-                        room_id, EventType.ROOM_POWER_LEVELS
-                    )
-                    bot_level = levels.get_user_level(self.client.mxid)
-                    redact_level = getattr(levels, 'redact', 50)  # Default to 50 if not set
+                    # Set default 7-day expiration (7 days in milliseconds)
+                    default_expiry_ms = 7 * 24 * 60 * 60 * 1000
                     
-                    if bot_level >= redact_level:
-                        greeting_status = "✅ Status: Bot has necessary permissions to redact messages"
-                    else:
-                        greeting_status = "⚠️ Warning: Bot needs power level " + str(redact_level) + " or higher to redact messages. " \
-                                        "Current level: " + str(bot_level) + ". Please grant appropriate permissions."
+                    # Use REPLACE INTO for SQLite compatibility
+                    query = """
+                        INSERT INTO room_expiry_times(room_id, expiry_msec)
+                        VALUES ($1, $2)
+                        ON CONFLICT(room_id) DO UPDATE SET expiry_msec=$2
+                    """
+                    await self.database.execute(query, room_id, default_expiry_ms)
                     
-                    greeting += greeting_status
+                    greeting = '\n'.join([
+                        "🤖 Hi, I'm a message expiration bot!",
+                        "",
+                        "📅 Default Configuration: Messages will automatically expire after 7 days",
+                        "",
+                        "💡 Commands:",
+                        "• !expire set <time> - Change expiration time (e.g., !expire set 24h)",
+                        "• !expire unset - Disable message expiration", 
+                        "• !expire show - Show current settings",
+                        ""
+                    ])
 
-                except Exception as perm_error:
-                    greeting_status = "⚠️ Warning: Unable to verify bot permissions. Please ensure the bot has power level 50+ to redact messages."
+                    # Check if the bot has necessary permissions
+                    try:
+                        levels = await self.client.get_state_event(
+                            room_id, EventType.ROOM_POWER_LEVELS
+                        )
+                        bot_level = levels.get_user_level(self.client.mxid)
+                        redact_level = getattr(levels, 'redact', 50)  # Default to 50 if not set
+                        
+                        if bot_level >= redact_level:
+                            greeting_status = "✅ Status: Bot has necessary permissions to redact messages"
+                        else:
+                            greeting_status = "⚠️ Warning: Bot needs power level " + str(redact_level) + " or higher to redact messages. " \
+                                            "Current level: " + str(bot_level) + ". Please grant appropriate permissions."
+                        
+                        greeting += greeting_status
+
+                    except Exception as perm_error:
+                        greeting_status = "⚠️ Warning: Unable to verify bot permissions. Please ensure the bot has power level 50+ to redact messages."
+                        greeting += greeting_status
+                        self.log.error(f"Failed to check permissions in room {room_id}: {perm_error}")
+                    finally:
+                        await self.client.send_text(room_id, greeting)
+                        self.log.info(f"Set default 7-day expiration for room {room_id}")
+                    
+                except Exception as e:
+                    self.log.error(f"Failed to set default expiration for room {room_id}: {e}")
+                    greeting_status = "⚠️ Warning: Something unexpected happened, and I was unable to configure default message expiration. " \
+                                    "Please use !expire set 7d to manually configure it."
                     greeting += greeting_status
-                    self.log.error(f"Failed to check permissions in room {room_id}: {perm_error}")
-                finally:
                     await self.client.send_text(room_id, greeting)
-                    self.log.info(f"Set default 7-day expiration for room {room_id}")
-                
-            except Exception as e:
-                self.log.error(f"Failed to set default expiration for room {room_id}: {e}")
-                greeting_status = "⚠️ Warning: Something unexpected happened, and I was unable to configure default message expiration. " \
-                                "Please use !expire set 7d to manually configure it."
-                greeting += greeting_status
-                await self.client.send_text(room_id, greeting)
+            else:
+                self.log.info(f"Bot joining room {room_id} that already has expiration settings configured")
 
     @classmethod
     def get_db_upgrade_table(cls) -> None:

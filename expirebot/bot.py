@@ -358,6 +358,9 @@ class ExpiringMessages(Plugin):
         
         # Check if the bot is leaving the room
         if evt.content.membership == Membership.LEAVE:
+            if evt.source & SyncStream.STATE:
+                return
+                
             self.log.info(f"Bot leaving room {room_id}, cleaning up expiration settings")
             
             try:
@@ -373,6 +376,9 @@ class ExpiringMessages(Plugin):
         
         # Check if the bot is joining the room
         elif evt.content.membership == Membership.JOIN:
+            if evt.source & SyncStream.STATE:
+                return
+
             self.log.info(f"Bot joining room {room_id}, setting default expiration")
             
             try:

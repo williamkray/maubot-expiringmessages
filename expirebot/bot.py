@@ -437,7 +437,7 @@ class ExpiringMessages(Plugin):
                         greeting += greeting_status
                         self.log.error(f"Failed to check permissions in room {room_id}: {perm_error}")
                     finally:
-                        await self.client.send_text(room_id, greeting)
+                        await self.client.send_notice(room_id, greeting)
                         self.log.info(f"Set default 7-day expiration for room {room_id}")
                     
                 except Exception as e:
@@ -445,7 +445,7 @@ class ExpiringMessages(Plugin):
                     greeting_status = "⚠️ Warning: Something unexpected happened, and I was unable to configure default message expiration. " \
                                     "Please use !expire set 7d to manually configure it."
                     greeting += greeting_status
-                    await self.client.send_text(room_id, greeting)
+                    await self.client.send_notice(room_id, greeting)
             else:
                 self.log.info(f"Bot joining room {room_id} that already has expiration settings configured")
 

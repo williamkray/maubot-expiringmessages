@@ -12,6 +12,14 @@ from mautrix.types import (MessageEvent, EventType, MessageType, StateEvent, Mem
 
 from .db import upgrade_table
 
+def _is_modern_room_version(room_version: str) -> bool:
+    """Return True if room version is 12 or newer (creators have unlimited power)."""
+    try:
+        return int(room_version) >= 12
+    except (ValueError, TypeError):
+        return False
+
+
 def parse_duration(duration_str: str) -> int:
     """
     Parse a string such as "24h", "3d", "15m", or composite durations like "1d2h" into seconds.
@@ -41,40 +49,62 @@ class ExpiringMessages(Plugin):
     _last_redaction_time: float = 0
     _min_redaction_interval: float = 0.1  # Minimum 100ms between redactions
 
+    async def _get_room_version_and_creators(self, room_id: str) -> tuple[str, list[str]]:
+        """Return (room_version, [creator_mxids]) by inspecting the m.room.create state event."""
+        try:
+            state_events = await self.client.get_state(room_id)
+            creation_event = next(
+                (e for e in state_events if e.type == EventType.ROOM_CREATE), None
+            )
+            if not creation_event:
+                return "1", []
+            room_version = creation_event.content.get("room_version", "1")
+            creators = []
+            if creation_event.sender:
+                creators.append(creation_event.sender)
+            additional = creation_event.content.get("additional_creators", [])
+            if isinstance(additional, list):
+                creators.extend(additional)
+            return room_version, creators
+        except Exception:
+            return "1", []
+
     async def can_use_command(self, evt: MessageEvent) -> tuple[bool, str]:
         """
         Check if both the user and bot have permission to redact messages in this room.
         Returns a tuple of (has_permission, error_message).
+
+        In room version 12+, the room creator(s) have unlimited power and bypass
+        the numeric power level check entirely.
         """
         try:
-            # Get the room's power levels
+            room_id = evt.room_id
             levels = await self.client.get_state_event(
-                evt.room_id, EventType.ROOM_POWER_LEVELS
+                room_id, EventType.ROOM_POWER_LEVELS
             )
-            
-            # Get the user's power level
             user_level = levels.get_user_level(evt.sender)
-            
-            # Get the bot's power level
             bot_level = levels.get_user_level(self.client.mxid)
-            
-            # Get the power level required for redaction
-            redact_level = getattr(levels, 'redact', 50)  # Default to 50 if not set
-            
-            # Debug logging
-            self.log.debug(f"Permission check for room {evt.room_id}:")
+            redact_level = getattr(levels, 'redact', 50)
+
+            self.log.debug(f"Permission check for room {room_id}:")
             self.log.debug(f"  User {evt.sender} has level {user_level}")
             self.log.debug(f"  Bot {self.client.mxid} has level {bot_level}")
             self.log.debug(f"  Required redaction level is {redact_level}")
-            
-            # Check if user has permission
-            if user_level < redact_level:
+
+            room_version, creators = await self._get_room_version_and_creators(room_id)
+            is_modern = _is_modern_room_version(room_version)
+            user_unlimited = is_modern and evt.sender in creators
+            bot_unlimited = is_modern and self.client.mxid in creators
+
+            self.log.debug(f"  Room version {room_version}, creators: {creators}")
+            self.log.debug(f"  user_unlimited={user_unlimited}, bot_unlimited={bot_unlimited}")
+
+            if not user_unlimited and user_level < redact_level:
                 return False, f"You need a power level of {redact_level} or higher to set message expiration."
-            
-            # Check if bot has permission
-            if bot_level < redact_level:
+
+            if not bot_unlimited and bot_level < redact_level:
                 return False, f"I need a power level of {redact_level} or higher to redact messages."
-            
+
             return True, ""
         except Exception as e:
             self.log.error(f"Error checking command permissions: {e}")
@@ -291,20 +321,24 @@ class ExpiringMessages(Plugin):
                     room_id, EventType.ROOM_POWER_LEVELS
                 )
                 bot_level = levels.get_user_level(self.client.mxid)
-                redact_level = getattr(levels, 'redact', 50)  # Default to 50 if not set
-                
-                if bot_level >= redact_level:
+                user_level = levels.get_user_level(evt.sender)
+                redact_level = getattr(levels, 'redact', 50)
+
+                room_version, creators = await self._get_room_version_and_creators(room_id)
+                is_modern = _is_modern_room_version(room_version)
+                bot_unlimited = is_modern and self.client.mxid in creators
+                user_unlimited = is_modern and evt.sender in creators
+
+                if bot_unlimited or bot_level >= redact_level:
                     response_parts.append("✅ **Bot Permissions:** Sufficient permissions to redact messages")
                 else:
                     response_parts.append(f"⚠️ **Bot Permissions:** Insufficient permissions (current: {bot_level}, required: {redact_level}+)")
-                
-                # Add user permission info
-                user_level = levels.get_user_level(evt.sender)
-                if user_level >= redact_level:
+
+                if user_unlimited or user_level >= redact_level:
                     response_parts.append("✅ **Your Permissions:** You can configure message expiration")
                 else:
                     response_parts.append(f"⚠️ **Your Permissions:** You need power level {redact_level}+ to configure expiration (current: {user_level})")
-                    
+
             except Exception as perm_error:
                 self.log.error(f"Failed to check permissions in room {room_id}: {perm_error}")
                 response_parts.append("⚠️ **Bot Permissions:** Unable to verify permissions")
@@ -431,14 +465,19 @@ class ExpiringMessages(Plugin):
                             room_id, EventType.ROOM_POWER_LEVELS
                         )
                         bot_level = levels.get_user_level(self.client.mxid)
-                        redact_level = getattr(levels, 'redact', 50)  # Default to 50 if not set
-                        
-                        if bot_level >= redact_level:
+                        redact_level = getattr(levels, 'redact', 50)
+
+                        room_version, creators = await self._get_room_version_and_creators(room_id)
+                        bot_unlimited = _is_modern_room_version(room_version) and self.client.mxid in creators
+
+                        if bot_unlimited or bot_level >= redact_level:
                             greeting_status = "✅ Status: Bot has necessary permissions to redact messages"
                         else:
-                            greeting_status = "⚠️ Warning: Bot needs power level " + str(redact_level) + " or higher to redact messages. " \
-                                            "Current level: " + str(bot_level) + ". Please grant appropriate permissions."
-                        
+                            greeting_status = (
+                                f"⚠️ Warning: Bot needs power level {redact_level} or higher to redact messages. "
+                                f"Current level: {bot_level}. Please grant appropriate permissions."
+                            )
+
                         greeting += greeting_status
 
                     except Exception as perm_error:
